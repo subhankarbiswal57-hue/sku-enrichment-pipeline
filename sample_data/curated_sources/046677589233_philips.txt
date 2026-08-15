@@ -1,0 +1,21 @@
+SOURCE_URL: https://www.usa.lighting.philips.com/consumer/p/led-bulb-75w-a19-e26-x4/046677589233
+FETCHED: 2026-08-15
+MATCHES INPUT ROW: Mfg_Part_Num=565374, Part_Desc="565374 75W Led A19 Med 27k 4pk"
+
+---
+
+Title: Bulb 75W A19 E26 x4
+Technology: LED
+Product code: 046677589233
+
+Description:
+A light bulb like no other. Create a warm, inviting ambiance. State-of-the-art
+LED light bulb providing a general lighting solution for daily indoor
+activities. You will save on energy costs immediately and reduce the
+frequency of bulb replacements, without compromising on the quality of your
+lighting.
+
+Specifications listed on page:
+- 2700K
+- 1100lm
+- 11000h

@@ -1,0 +1,21 @@
+SOURCE_URL: https://www.usa.lighting.philips.com/consumer/p/led-bulb-60w-a19-e26-x4/046677586874
+FETCHED: 2026-08-15
+MATCHES INPUT ROW: Mfg_Part_Num=586875, Part_Desc="586875 60W Led Multi CCT 4pk"
+
+---
+
+Title: Bulb 60W A19 E26 x4
+Technology: LED
+Product code: 046677586874
+
+Description:
+Selectable colour temperatures help you to make the right choice. Easy to
+adjust the colour temperature by switching the button. Enjoy 5 possible
+light colors in one product. Change the color of your light easily with by
+switching the button on the product.
+
+Specifications listed on page:
+- 2700/3000/3500/4000/5000K
+- 800lm
+- 15000h
+- Dimming

@@ -1,0 +1,15 @@
+mfg_part_num,attribute_label,expected_value,expected_uom,notes
+565374,Wattage,75,W,verified against usa.lighting.philips.com 046677589233
+565374,Color Temperature,2700,K,verified against usa.lighting.philips.com 046677589233
+565374,Pack Quantity,4,,verified against usa.lighting.philips.com 046677589233
+565374,Base Type,E26,,verified against usa.lighting.philips.com 046677589233 (page says E26 in title)
+565374,Lumens,1100,lm,verified against usa.lighting.philips.com 046677589233
+565374,Rated Life,11000,h,verified against usa.lighting.philips.com 046677589233
+565374,Dimmable,,,"page does not mention dimming for this SKU - correctly UNKNOWN"
+586875,Wattage,60,W,verified against usa.lighting.philips.com 046677586874
+586875,Color Temperature,,,"page lists 5 selectable CCTs (2700-5000K), not a single value - correctly UNKNOWN, not guessed"
+586875,Pack Quantity,4,,verified against usa.lighting.philips.com 046677586874
+586875,Base Type,E26,,"page title says E26, but raw Part_Desc does not include 'Med' - correctly UNKNOWN from our part_desc-only parser; a real system would also check the source page for this"
+586875,Lumens,800,lm,verified against usa.lighting.philips.com 046677586874
+586875,Rated Life,15000,h,verified against usa.lighting.philips.com 046677586874
+586875,Dimmable,Yes,,verified against usa.lighting.philips.com 046677586874
