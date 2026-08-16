@@ -6,3 +6,5 @@ output_demo.csv
 .venv/
 venv/
 *.egg-info/
+.DS_Store
+**/.DS_Store
