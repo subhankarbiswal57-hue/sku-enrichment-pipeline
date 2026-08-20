@@ -1,19 +1,17 @@
 """
 Stage — Evaluation.
 
-Scores pipeline output against sample_data/eval_set.csv, which we
-hand-verified ourselves against the real manufacturer pages (we do not
-have Unilog's actual 200-item ground truth — see project plan §0).
-
-Reports simple, honest counts rather than a formal precision/recall
-calculation, per the audit's guidance to keep evaluation proportional to
-a hackathon MVP: category accuracy, attribute accuracy, and unsupported-
-claim count (values we produced that the ground truth says are wrong or
-that we produced when we should have said UNKNOWN).
+Scores pipeline output against sample_data/eval_set.csv.
 """
 
+from __future__ import annotations
+
 import csv
+import os
+import sys
 from collections import defaultdict
+
+sys.path.insert(0, os.path.dirname(__file__))
 
 from enrich import enrich
 from ingest import load_and_clean
@@ -26,7 +24,7 @@ def load_eval_set(path: str) -> dict:
             expected[row["mfg_part_num"]][row["attribute_label"]] = {
                 "value": row["expected_value"] or None,
                 "uom": row["expected_uom"] or None,
-                "notes": row["notes"],
+                "notes": row.get("notes", ""),
             }
     return expected
 
@@ -52,7 +50,7 @@ def run_eval(input_path: str, eval_path: str):
             actual_value = actual.value if actual and actual.state == "FOUND" else None
 
             if exp["value"] is None and actual_value is None:
-                correct += 1  # both correctly say UNKNOWN
+                correct += 1  # both correctly say UNKNOWN / BLANK
             elif exp["value"] == actual_value:
                 correct += 1
             elif exp["value"] is None and actual_value is not None:

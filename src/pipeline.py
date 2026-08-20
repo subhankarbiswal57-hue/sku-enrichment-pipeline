@@ -29,6 +29,9 @@ This file makes a best-effort mapping onto those four output columns. Check
 this against the ground-truth CSV / whoever owns the taxonomy before demo day.
 """
 
+from __future__ import annotations
+
+import argparse
 import csv
 import json
 import os
