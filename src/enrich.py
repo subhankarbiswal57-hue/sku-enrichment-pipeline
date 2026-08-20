@@ -46,12 +46,26 @@ from models import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Grok API config
+# API config — OpenRouter (primary) or xAI Grok (fallback)
 # ---------------------------------------------------------------------------
 
-XAI_API_KEY = os.environ.get("XAI_API_KEY")
-XAI_API_URL = "https://api.x.ai/v1/chat/completions"
-MODEL = "grok-4"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+XAI_API_KEY        = os.environ.get("XAI_API_KEY")
+LLM_MODEL          = os.environ.get("LLM_MODEL", "qwen/qwen3-8b:free")
+
+# Determine which API to use
+if OPENROUTER_API_KEY:
+    _API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    _API_KEY = OPENROUTER_API_KEY
+    _MODEL   = LLM_MODEL
+elif XAI_API_KEY:
+    _API_URL = "https://api.x.ai/v1/chat/completions"
+    _API_KEY = XAI_API_KEY
+    _MODEL   = "grok-beta"  # use grok-beta — grok-4 requires special access
+else:
+    _API_URL = None
+    _API_KEY = None
+    _MODEL   = None
 
 SYSTEM_PROMPT = (
     "Extract product attributes from the manufacturer page text below. "
@@ -218,13 +232,29 @@ def _fallback_extract_from_source(source_text: str, source_url: str) -> list[Att
 
 def _llm_extract_from_source(source_text: str, source_url: str) -> list[Attribute]:
     """
-    Return exactly 3 Attributes by calling the Grok API.
+    Return exactly 3 Attributes by calling the LLM API (OpenRouter or xAI).
     On ANY failure: return 3 BLANK attributes and log the error.
     NEVER raises.
     """
+    if not _API_KEY:
+        # No API key configured — should not be called, but guard anyway
+        return [
+            make_blank_attr("Lumens",     "no API key"),
+            make_blank_attr("Rated Life", "no API key"),
+            make_blank_attr("Dimmable",   "no API key"),
+        ]
     try:
+        headers = {
+            "Authorization": f"Bearer {_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        # OpenRouter requires these extra headers
+        if OPENROUTER_API_KEY:
+            headers["HTTP-Referer"] = "https://github.com/shazamcodes64/sku-enrichment-pipeline"
+            headers["X-Title"] = "SKU Enrichment Pipeline"
+
         payload = json.dumps({
-            "model": MODEL,
+            "model": _MODEL,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": source_text},
@@ -233,19 +263,22 @@ def _llm_extract_from_source(source_text: str, source_url: str) -> list[Attribut
         }).encode()
 
         req = urllib.request.Request(
-            XAI_API_URL,
+            _API_URL,
             data=payload,
-            headers={
-                "Authorization": f"Bearer {XAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
 
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read())
 
-        content = body["choices"][0]["message"]["content"]
-        parsed  = json.loads(content)
+        content = body["choices"][0]["message"]["content"].strip()
+
+        # Strip markdown code fences if model returns ```json ... ```
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\s*", "", content)
+            content = re.sub(r"\s*```$", "", content)
+
+        parsed = json.loads(content)
 
         attrs: list[Attribute] = []
 
@@ -350,7 +383,7 @@ def enrich(row: CleanRow) -> EnrichedRow:
     if source:
         source_url  = source["source_url"]
         source_text = source["source_text"]
-        if XAI_API_KEY:
+        if _API_KEY:
             source_attrs = _llm_extract_from_source(source_text, source_url)
         else:
             source_attrs = _fallback_extract_from_source(source_text, source_url)
@@ -387,8 +420,9 @@ if __name__ == "__main__":
     import sys as _sys
     _sys.path.insert(0, os.path.dirname(__file__))
 
-    # Force regex fallback — never call the live API in ad-hoc tests
+    # Use regex fallback for quick ad-hoc tests (don't consume API quota)
     os.environ.pop("XAI_API_KEY", None)
+    os.environ.pop("OPENROUTER_API_KEY", None)
 
     try:
         from ingest import load_and_clean
