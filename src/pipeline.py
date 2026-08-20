@@ -125,12 +125,15 @@ except ImportError:
 
 
 try:
-    from descriptions import build_all  # TODO: CONFIRM real module name (Person B)
+    from describe import build_all  # Person B module
 except ImportError:
-    print("[pipeline] descriptions module not found yet — using local stub build_all()", file=sys.stderr)
+    try:
+        from descriptions import build_all
+    except ImportError:
+        print("[pipeline] describe module not found yet — using local stub build_all()", file=sys.stderr)
 
-    def build_all(enriched: "EnrichedRow", manufacturer_name: Optional[str]) -> dict:
-        return {"invoice_desc": "", "mobile_desc": "", "short_desc": "", "long_desc1": ""}
+        def build_all(enriched: "EnrichedRow", manufacturer_name: Optional[str]) -> dict:
+            return {"INVOICE_DESC": "", "MOBILE_DESC": "", "SHORT_DESC": "", "LONG_DESC1": "", "RETAIL_DESC": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -211,16 +214,27 @@ def build_output_row(row: "CleanRow", headers: list) -> dict:
         "DIB_Brand": row.dib_brand or "",
         "Part_Manuf": _resolve_part_manuf(row),
         "MANUFACTURER_NAME": row.manufacturer_name or "",
-        "MANUFACTURER_PART_NUMBER": row.mfg_part_num,  # TODO: CONFIRM WITH TEAM
+        "MANUFACTURER_PART_NUMBER": row.mfg_part_num,
         "BRAND_NAME": _resolve_brand_name(row),
-        "INVOICE_DESC": descs.get("invoice_desc", ""),
-        "MOBILE_DESC": descs.get("mobile_desc", ""),
-        "SHORT_DESC": descs.get("short_desc", ""),
-        "LONG_DESC1": descs.get("long_desc1", ""),
+        "INVOICE_DESC": descs.get("INVOICE_DESC") or descs.get("invoice_desc", ""),
+        "MOBILE_DESC": descs.get("MOBILE_DESC") or descs.get("mobile_desc", ""),
+        "SHORT_DESC": descs.get("SHORT_DESC") or descs.get("short_desc", ""),
+        "LONG_DESC1": descs.get("LONG_DESC1") or descs.get("long_desc1", ""),
+        "RETAIL_DESC": descs.get("RETAIL_DESC") or descs.get("retail_desc", ""),
     }
     for col, val in always.items():
         if col in out:
             out[col] = val if val is not None else ""
+
+    # --- Marketing Description & Features ---
+    if getattr(enriched, "marketing_description", None):
+        if "MARKETING_DESCRIPTION" in out:
+            out["MARKETING_DESCRIPTION"] = enriched.marketing_description
+
+    for i, feat in enumerate(getattr(enriched, "item_features", [])[:20], start=1):
+        col = f"ITEM_FEATURES_{i}"
+        if col in out:
+            out[col] = feat
 
     # --- Classification columns, only if found ---
     if _classification_found(classification):
