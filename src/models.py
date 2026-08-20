@@ -65,6 +65,7 @@ class Attribute:
     uom: str | None                         # unit abbreviation (e.g. "W", "K", "lm") or None
     confidence: Literal["High", "Medium", "Low"]
     evidence_note: str                      # source description for the review UI
+    is_novel_value: bool = False            # True if value is not in our known LOV — flag for review UI
 
     @property
     def state(self) -> Literal["FOUND", "BLANK"]:
@@ -129,12 +130,16 @@ class EnrichedRow:
 
     mfr_url is the manufacturer page URL used as evidence, or None.
     ref_urls holds up to 5 additional reference URLs (manuals, spec sheets).
+    marketing_description: captured as-is from the manufacturer page (manufacturer-only, no fallback).
+    item_features: list of bullet-point features from the manufacturer page (manufacturer-only).
     """
     mfg_part_num: str
     part_desc: str
     mfr_url: str | None          # None if no manufacturer source was retrieved
     ref_urls: list[str] = field(default_factory=list)   # up to 5 entries
     attributes: list[Attribute] = field(default_factory=list)  # always 7
+    marketing_description: str | None = None  # from manufacturer page only — never generated
+    item_features: list[str] = field(default_factory=list)  # from manufacturer page only
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +152,7 @@ def make_found_attr(
     uom: str | None,
     confidence: Literal["High", "Medium"],
     evidence_note: str,
+    is_novel_value: bool = False,
 ) -> Attribute:
     """Create a FOUND Attribute. value must be a non-empty string."""
     if not value:
@@ -157,6 +163,7 @@ def make_found_attr(
         uom=uom,
         confidence=confidence,
         evidence_note=evidence_note,
+        is_novel_value=is_novel_value,
     )
 
 

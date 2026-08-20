@@ -1,184 +1,416 @@
 """
-Stage 4 — Attribute Extraction.
+Stage 4 — Attribute Extraction & EnrichedRow Assembly  (Person B)
 
-Combines two sources per attribute:
-  1. Deterministic parsing directly from Part_Desc (normalize.py) — for
-     wattage, color temperature, pack quantity, base type, when they're
-     spelled out in the raw description itself.
-  2. LLM extraction from the retrieved manufacturer source text — for
-     attributes that aren't in Part_Desc but ARE on the manufacturer page
-     (lumens, rated life hours, dimmable).
+Combines two attribute sources per row:
+  1. Deterministic parsing from Part_Desc via normalize.py
+     → Wattage, Color Temperature, Pack Quantity, Base Type
+     → confidence=High, evidence_note="Part_Desc"
 
-Every attribute gets: value, state (FOUND/UNKNOWN — no INFERRED, per the
-project plan), and internally a confidence level (High/Medium/Low) that
-drives the review queue in the demo UI. This confidence is NOT written
-as an extra output column (the real 252-column format isn't modified),
-only shown in app.py.
+  2. Extraction from retrieved manufacturer page via Grok API (or regex fallback)
+     → Lumens, Rated Life, Dimmable
+     → confidence=Medium if found, Low if not
 
-Two run modes:
-  - XAI_API_KEY set  -> calls the real Grok API for source-text extraction
-  - XAI_API_KEY unset -> falls back to a small regex-based extractor over
-    the curated source text, so the pipeline is runnable and testable
-    without a live key. This fallback is clearly a stand-in for the LLM
-    call, not a claim that it IS the LLM call.
+Always returns EnrichedRow with exactly 7 Attributes in fixed ATTRIBUTE_LABELS order.
+Never raises — all errors are caught and logged.
 """
 
+from __future__ import annotations
+
 import json
+import logging
 import os
 import re
-from dataclasses import dataclass, field
+import sys
+import urllib.request
+import urllib.error
+from typing import TYPE_CHECKING
 
-from ingest import CleanRow
-from normalize import parse_base_type, parse_cct, parse_pack_qty, parse_wattage
-from retrieve import retrieve
+# Load .env file if present (so XAI_API_KEY is picked up automatically)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+except ImportError:
+    pass  # dotenv not installed — rely on environment variable being set manually
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+from models import (
+    ATTRIBUTE_LABELS,
+    Attribute,
+    CleanRow,
+    EnrichedRow,
+    make_blank_attr,
+    make_found_attr,
+)
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Grok API config
+# ---------------------------------------------------------------------------
 
 XAI_API_KEY = os.environ.get("XAI_API_KEY")
 XAI_API_URL = "https://api.x.ai/v1/chat/completions"
 MODEL = "grok-4"
 
-LUMENS_RE = re.compile(r"(\d{3,5})\s*lm", re.IGNORECASE)
-LIFE_HOURS_RE = re.compile(r"(\d{3,6})\s*h\b", re.IGNORECASE)
-DIMMING_RE = re.compile(r"\bdimm", re.IGNORECASE)
+SYSTEM_PROMPT = (
+    "Extract product attributes from the manufacturer page text below. "
+    "Return ONLY a JSON object with exactly these three fields: "
+    '{"lumens": <integer or null>, "rated_life_hours": <integer or null>, '
+    '"dimmable": <true/false/null>}. '
+    "Use null for anything not explicitly stated in the text — never guess."
+)
+
+# ---------------------------------------------------------------------------
+# Regex patterns for fallback source extraction
+# ---------------------------------------------------------------------------
+
+# Numeric attribute patterns
+LUMENS_RE   = re.compile(r"(\d{3,5})\s*lm", re.IGNORECASE)
+LIFE_RE     = re.compile(r"(\d{3,6})\s*h(?:our|r)?(?:\b|$)", re.IGNORECASE)
+DIMMABLE_RE = re.compile(r"\bdi(?:mm|mming|mmable)\b", re.IGNORECASE)
+
+# Marketing description: paragraph(s) after "Description:" heading
+MARKETING_DESC_RE = re.compile(
+    r"(?:^|\n)(?:Description|Marketing|Overview)[:\s]*\n+(.*?)(?:\n\n|\nSpecification|\nTitle|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+# Item features: bullet-point lines (-, •, *) — require at least 3 chars of content
+ITEM_FEATURE_RE = re.compile(r"^[-•*]\s*(.{3,})$", re.MULTILINE)
 
 
-@dataclass
-class Attribute:
-    label: str
-    value: str | None
-    uom: str | None
-    state: str  # FOUND or UNKNOWN
-    confidence: str  # High / Medium / Low (internal only)
-    evidence_note: str  # where it came from, for the review UI
+# ---------------------------------------------------------------------------
+# Lazy import of normalize functions (Person A's module)
+# If Person A hasn't written normalize.py yet, gracefully degrade.
+# ---------------------------------------------------------------------------
+
+def _get_normalize():
+    try:
+        import normalize
+        return normalize
+    except ImportError:
+        logger.warning("normalize.py not found — deterministic attributes will all be BLANK")
+        return None
 
 
-@dataclass
-class EnrichedRow:
-    mfg_part_num: str
-    part_desc: str
-    source_url: str | None
-    attributes: list[Attribute] = field(default_factory=list)
+def _get_retrieve():
+    try:
+        import retrieve
+        return retrieve
+    except ImportError:
+        logger.warning("retrieve.py not found — source retrieval will return None")
+        return None
 
 
-def _attr(label, value, uom, source) -> Attribute:
-    if value is None:
-        return Attribute(label, None, None, "UNKNOWN", "Low", "not found in Part_Desc or source")
-    conf = "High" if source == "part_desc" else "Medium"
-    return Attribute(label, value, uom, "FOUND", conf, source)
+# ---------------------------------------------------------------------------
+# Helper: split a formatted unit string into (value, uom)
+# e.g. "75 W" -> ("75", "W"),  "2700 K" -> ("2700", "K"),  None -> (None, None)
+# ---------------------------------------------------------------------------
 
+def _split_value_uom(formatted: str | None) -> tuple[str | None, str | None]:
+    if formatted is None:
+        return None, None
+    parts = formatted.strip().split()
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    if len(parts) == 1:
+        return parts[0], None
+    return formatted, None
+
+
+# ---------------------------------------------------------------------------
+# Stage 1 of 2: deterministic attributes from Part_Desc
+# ---------------------------------------------------------------------------
 
 def _deterministic_attributes(row: CleanRow) -> list[Attribute]:
-    """Attributes we can parse straight from the raw description — no
-    retrieval or LLM call needed, matches this data's actual pattern."""
-    wattage = parse_wattage(row.part_desc)
-    cct = parse_cct(row.part_desc)
-    pack_qty = parse_pack_qty(row.part_desc)
-    base_type = parse_base_type(row.part_desc)
+    """
+    Return exactly 4 Attributes from Part_Desc parsing.
+    Order: Wattage, Color Temperature, Pack Quantity, Base Type.
 
-    return [
-        _attr("Wattage", wattage.split()[0] if wattage else None, "W", "part_desc"),
-        _attr("Color Temperature", cct.split()[0] if cct else None, "K", "part_desc"),
-        _attr("Pack Quantity", pack_qty, None, "part_desc"),
-        _attr("Base Type", base_type, None, "part_desc"),
-    ]
+    Value and UOM are stored SEPARATELY:
+        Wattage:           value="75",   uom="W"
+        Color Temperature: value="2700", uom="K"
+        Pack Quantity:     value="4",    uom=None
+        Base Type:         value="E26",  uom=None
+    """
+    norm = _get_normalize()
+    desc = row.part_desc
+
+    if norm:
+        raw_wattage  = norm.parse_wattage(desc)
+        raw_cct      = norm.parse_cct(desc)
+        raw_pack     = norm.parse_pack_qty(desc)
+        raw_base     = norm.parse_base_type(desc)
+    else:
+        raw_wattage = raw_cct = raw_pack = raw_base = None
+
+    w_val, w_uom = _split_value_uom(raw_wattage)
+    c_val, c_uom = _split_value_uom(raw_cct)
+    # pack and base already return plain strings (no unit suffix)
+
+    attrs: list[Attribute] = []
+
+    # Wattage
+    if w_val:
+        attrs.append(make_found_attr("Wattage", w_val, w_uom or "W", "High", "Part_Desc"))
+    else:
+        attrs.append(make_blank_attr("Wattage", "not in Part_Desc"))
+
+    # Color Temperature
+    if c_val:
+        attrs.append(make_found_attr("Color Temperature", c_val, c_uom or "K", "High", "Part_Desc"))
+    else:
+        attrs.append(make_blank_attr("Color Temperature", "not in Part_Desc"))
+
+    # Pack Quantity
+    if raw_pack:
+        attrs.append(make_found_attr("Pack Quantity", raw_pack, None, "High", "Part_Desc"))
+    else:
+        attrs.append(make_blank_attr("Pack Quantity", "not in Part_Desc"))
+
+    # Base Type
+    if raw_base:
+        attrs.append(make_found_attr("Base Type", raw_base, None, "High", "Part_Desc"))
+    else:
+        attrs.append(make_blank_attr("Base Type", "not in Part_Desc"))
+
+    return attrs
 
 
-def _fallback_extract_from_source(source_text: str) -> list[Attribute]:
-    """Regex extractor for manufacturer page text. Only reads what's
-    literally present in the fetched manufacturer page text."""
-    lumens_m = LUMENS_RE.search(source_text)
-    life_m = LIFE_HOURS_RE.search(source_text)
-    dimmable = bool(DIMMING_RE.search(source_text))
+# ---------------------------------------------------------------------------
+# Stage 2a: regex fallback extraction from manufacturer source text
+# ---------------------------------------------------------------------------
 
-    return [
-        _attr("Lumens", lumens_m.group(1) if lumens_m else None, "lm", "manufacturer_source"),
-        _attr("Rated Life", life_m.group(1) if life_m else None, "h", "manufacturer_source"),
-        _attr("Dimmable", "Yes" if dimmable else None, None, "manufacturer_source"),
-    ]
+def _fallback_extract_from_source(source_text: str, source_url: str) -> list[Attribute]:
+    """
+    Return exactly 3 Attributes by scanning source_text with regex.
+    Order: Lumens, Rated Life, Dimmable.
+    Used when XAI_API_KEY is not set.
+    """
+    attrs: list[Attribute] = []
 
+    # Lumens
+    m = LUMENS_RE.search(source_text)
+    if m:
+        attrs.append(make_found_attr("Lumens", m.group(1), "lm", "Medium", source_url))
+    else:
+        attrs.append(make_blank_attr("Lumens", "not in source"))
+
+    # Rated Life (hours)
+    m = LIFE_RE.search(source_text)
+    if m:
+        attrs.append(make_found_attr("Rated Life", m.group(1), "h", "Medium", source_url))
+    else:
+        attrs.append(make_blank_attr("Rated Life", "not in source"))
+
+    # Dimmable
+    if DIMMABLE_RE.search(source_text):
+        attrs.append(make_found_attr("Dimmable", "Yes", None, "Medium", source_url))
+    else:
+        attrs.append(make_blank_attr("Dimmable", "not in source"))
+
+    return attrs
+
+
+# ---------------------------------------------------------------------------
+# Stage 2b: Grok API extraction from manufacturer source text
+# ---------------------------------------------------------------------------
 
 def _llm_extract_from_source(source_text: str, source_url: str) -> list[Attribute]:
-    """Real LLM extraction call from manufacturer source text."""
-    import urllib.request
+    """
+    Return exactly 3 Attributes by calling the Grok API.
+    On ANY failure: return 3 BLANK attributes and log the error.
+    NEVER raises.
+    """
+    try:
+        payload = json.dumps({
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": source_text},
+            ],
+            "max_tokens": 300,
+        }).encode()
 
-    system_prompt = (
-        "Extract product attributes (Lumens, Rated Life in hours, Dimmable "
-        "yes/no, Base Type) from the manufacturer page text below. Return ONLY a JSON "
-        "object: {\"lumens\": <number or null>, \"rated_life_hours\": "
-        "<number or null>, \"dimmable\": <true/false/null>, \"base_type\": <string or null>}. "
-        "Use null for anything not explicitly stated in the text — never guess."
-    )
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": source_text},
-        ],
-        "max_tokens": 300,
-    }
-    req = urllib.request.Request(
-        XAI_API_URL,
-        data=json.dumps(payload).encode(),
-        headers={
-            "Authorization": f"Bearer {XAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        result = json.loads(resp.read())
-    content = result["choices"][0]["message"]["content"]
-    parsed = json.loads(content)
+        req = urllib.request.Request(
+            XAI_API_URL,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {XAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+        )
 
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read())
+
+        content = body["choices"][0]["message"]["content"]
+        parsed  = json.loads(content)
+
+        attrs: list[Attribute] = []
+
+        # Lumens
+        lm = parsed.get("lumens")
+        if lm is not None:
+            attrs.append(make_found_attr("Lumens", str(lm), "lm", "Medium", source_url))
+        else:
+            attrs.append(make_blank_attr("Lumens", "not stated in source"))
+
+        # Rated Life
+        rl = parsed.get("rated_life_hours")
+        if rl is not None:
+            attrs.append(make_found_attr("Rated Life", str(rl), "h", "Medium", source_url))
+        else:
+            attrs.append(make_blank_attr("Rated Life", "not stated in source"))
+
+        # Dimmable — True -> "Yes", False/null -> BLANK
+        dm = parsed.get("dimmable")
+        if dm is True:
+            attrs.append(make_found_attr("Dimmable", "Yes", None, "Medium", source_url))
+        else:
+            attrs.append(make_blank_attr("Dimmable", "not stated in source"))
+
+        return attrs
+
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, Exception) as exc:
+        logger.warning("Grok API call failed for source %s: %s", source_url, exc)
+        return [
+            make_blank_attr("Lumens",     "API error"),
+            make_blank_attr("Rated Life", "API error"),
+            make_blank_attr("Dimmable",   "API error"),
+        ]
+
+
+# ---------------------------------------------------------------------------
+# 3 BLANK source attributes — used when no manufacturer source is available
+# ---------------------------------------------------------------------------
+
+def _no_source_attrs() -> list[Attribute]:
     return [
-        _attr("Lumens", parsed.get("lumens"), "lm", "manufacturer_source"),
-        _attr("Rated Life", parsed.get("rated_life_hours"), "h", "manufacturer_source"),
-        _attr("Dimmable", "Yes" if parsed.get("dimmable") else None, None, "manufacturer_source"),
+        make_blank_attr("Lumens",     "no source"),
+        make_blank_attr("Rated Life", "no source"),
+        make_blank_attr("Dimmable",   "no source"),
     ]
 
 
+# ---------------------------------------------------------------------------
+# Extract manufacturer-only fields (marketing description + item features)
+# These fields have ZERO fallback — manufacturer page only, never generated.
+# ---------------------------------------------------------------------------
+
+def _extract_manufacturer_only_fields(
+    source_text: str,
+) -> tuple[str | None, list[str]]:
+    """
+    Returns (marketing_description, item_features_list).
+
+    Both are extracted from the source text as-is — we do NOT generate or
+    rephrase these. If not found, marketing_description=None and
+    item_features=[].
+
+    Per the official rules:
+    - MARKETING_DESCRIPTION must come from the manufacturer's site verbatim.
+    - ITEM_FEATURES must come from the manufacturer's site only.
+    """
+    # Marketing description: paragraph after "Description:" heading
+    marketing_description: str | None = None
+    m = MARKETING_DESC_RE.search(source_text)
+    if m:
+        marketing_description = m.group(1).strip()
+        # Collapse excessive whitespace but preserve paragraphs
+        marketing_description = re.sub(r"\n{3,}", "\n\n", marketing_description)
+
+    # Item features: bullet-point lines
+    item_features = [m.group(1).strip() for m in ITEM_FEATURE_RE.finditer(source_text)]
+
+    return marketing_description, item_features
+
+
+# ---------------------------------------------------------------------------
 def enrich(row: CleanRow) -> EnrichedRow:
-    attributes = _deterministic_attributes(row)
+    """
+    Run full attribute extraction for one input row.
 
-    source = retrieve(row.mfg_part_num, row.manufacturer_name)
-    if source is None:
-        attributes += [
-            _attr("Lumens", None, "lm", "no_source"),
-            _attr("Rated Life", None, "h", "no_source"),
-            _attr("Dimmable", None, None, "no_source"),
-        ]
-        return EnrichedRow(row.mfg_part_num, row.part_desc, None, attributes)
+    Always returns an EnrichedRow with exactly 7 Attributes
+    in fixed ATTRIBUTE_LABELS order:
+        Wattage, Color Temperature, Pack Quantity, Base Type,
+        Lumens, Rated Life, Dimmable
+    """
+    # Step 1: deterministic attributes from Part_Desc
+    part_desc_attrs = _deterministic_attributes(row)  # 4 attrs
 
-    # If base type was not found in part_desc, attempt extraction from source text
-    base_attr = next((a for a in attributes if a.label == "Base Type"), None)
-    if base_attr and base_attr.state == "UNKNOWN":
-        source_base = parse_base_type(source["source_text"])
-        if source_base:
-            base_attr.value = source_base
-            base_attr.state = "FOUND"
-            base_attr.confidence = "Medium"
-            base_attr.evidence_note = "manufacturer_source"
-
-    if XAI_API_KEY:
-        source_attrs = _llm_extract_from_source(source["source_text"], source["source_url"])
+    # Step 2: manufacturer source lookup
+    retrieve_mod = _get_retrieve()
+    if retrieve_mod:
+        try:
+            source = retrieve_mod.retrieve(row.mfg_part_num, row.manufacturer_name)
+        except TypeError:
+            source = retrieve_mod.retrieve(row.mfg_part_num)
     else:
-        source_attrs = _fallback_extract_from_source(source["source_text"])
+        source = None
 
-    return EnrichedRow(row.mfg_part_num, row.part_desc, source["source_url"], attributes + source_attrs)
+    # Step 3: source-based extraction
+    if source:
+        source_url = source["source_url"]
+        source_text = source["source_text"]
+        if XAI_API_KEY:
+            source_attrs = _llm_extract_from_source(source_text, source_url)
+        else:
+            source_attrs = _fallback_extract_from_source(source_text, source_url)
+        mfr_url = source_url
+        marketing_description, item_features = _extract_manufacturer_only_fields(source_text)
+    else:
+        source_attrs = _no_source_attrs()  # 3 blank attrs
+        mfr_url = None
+        marketing_description = None
+        item_features = []
 
+    # Combine: always 7 attrs in fixed order
+    all_attrs = part_desc_attrs + source_attrs
+    assert len(all_attrs) == 7, (
+        f"enrich() produced {len(all_attrs)} attributes for {row.mfg_part_num}; expected 7"
+    )
+
+    return EnrichedRow(
+        mfg_part_num=row.mfg_part_num,
+        part_desc=row.part_desc,
+        mfr_url=mfr_url,
+        ref_urls=[],
+        attributes=all_attrs,
+        marketing_description=marketing_description,
+        item_features=item_features,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Quick smoke test
+# ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":
-    from ingest import load_and_clean
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(__file__))
 
-    rows = load_and_clean("sample_data/input_slice.csv")
-    by_part = {r.mfg_part_num: r for r in rows}
+    # Force regex fallback — never call the live API in ad-hoc tests
+    os.environ.pop("XAI_API_KEY", None)
 
-    if not XAI_API_KEY:
-        print("(No XAI_API_KEY set — using regex fallback extractor, not the real LLM call)\n")
+    try:
+        from ingest import load_and_clean
+        rows = {r.mfg_part_num: r for r in load_and_clean("sample_data/input_slice.csv")}
+    except ImportError:
+        print("ingest.py not available — using minimal test row")
+        rows = {
+            "565374": CleanRow("565374", "565374 75W Led A19 Med 27k 4pk",
+                               None, None, None, "Phillips Lighting", "5831"),
+        }
 
     for part_num in ["565374", "586875"]:
-        result = enrich(by_part[part_num])
-        print(f"{result.mfg_part_num} | {result.part_desc}")
-        print(f"  source: {result.source_url}")
+        if part_num not in rows:
+            print(f"{part_num}: not in input slice")
+            continue
+        result = enrich(rows[part_num])
+        print(f"\n{result.mfg_part_num} | {result.part_desc}")
+        print(f"  MFR URL: {result.mfr_url}")
         for a in result.attributes:
-            print(f"  {a.label}: {a.value} {a.uom or ''} [{a.state}, confidence={a.confidence}]")
-        print()
+            val = f"{a.value} {a.uom}".strip() if a.value else "—"
+            print(f"  [{a.state:5} {a.confidence:6}] {a.label}: {val}  ({a.evidence_note})")

@@ -1,22 +1,16 @@
 """
 Main pipeline — runs Stages 1-6 on the real input slice and writes output
-using the EXACT 252-column header row from Unihack__Expected_Output_-
-_Delivery_Format.csv (headers are not modified, per the submission
-email's instruction). Columns we haven't attempted (pricing, images,
-warranty, dimensions, etc.) are left blank — consistent with how the
-real worked example itself has blank cells, not a shortcut we're hiding.
-
-Populated columns for this MVP:
-  MFR URL, Dept, Class, Fine, Classpath, Mfg_Part_Num, Part_Desc,
-  E1_Brand, Unilog_Brand, DIB_Brand, Part_Manuf, MANUFACTURER_NAME,
-  MANUFACTURER_PART_NUMBER, INVOICE_DESC, MOBILE_DESC, SHORT_DESC,
-  LONG_DESC1, ATTRIBUTE_LABEL/VALUE/UOM 1-7 (Wattage, Color Temperature,
-  Pack Quantity, Base Type, Lumens, Rated Life, Dimmable)
+using the EXACT 252-column header row from Unihack__Expected_Output_-_Delivery_Format.csv
 """
+
+from __future__ import annotations
 
 import csv
 import json
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
 
 from classify import classify
 from describe import build_all
@@ -27,11 +21,13 @@ HEADERS_PATH = os.path.join(os.path.dirname(__file__), "..", "sample_data", "rea
 
 
 def load_real_headers() -> list[str]:
-    with open(HEADERS_PATH, encoding="utf-8") as f:
-        return json.load(f)
+    if os.path.exists(HEADERS_PATH):
+        with open(HEADERS_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    return []
 
 
-def build_output_row(raw_row, headers: list[str]) -> dict:
+def build_output_row(raw_row, headers: list[str]) -> tuple[dict, any, any]:
     out = {h: "" for h in headers}
 
     classification = classify(raw_row)
@@ -48,19 +44,19 @@ def build_output_row(raw_row, headers: list[str]) -> dict:
     out["MANUFACTURER_NAME"] = raw_row.manufacturer_name
     out["MANUFACTURER_PART_NUMBER"] = raw_row.mfg_part_num
 
-    if classification.state == "FOUND":
+    if classification and classification.state == "FOUND":
         out["Dept"] = classification.dept
         out["Class"] = classification.cls
         out["Fine"] = classification.fine
         out["Classpath"] = classification.classpath
 
-    if enriched.source_url:
-        out["MFR URL"] = enriched.source_url
+    if enriched.mfr_url:
+        out["MFR URL"] = enriched.mfr_url
 
-    out["INVOICE_DESC"] = descs["INVOICE_DESC"]
-    out["MOBILE_DESC"] = descs["MOBILE_DESC"]
-    out["SHORT_DESC"] = descs["SHORT_DESC"]
-    out["LONG_DESC1"] = descs["LONG_DESC1"]
+    out["INVOICE_DESC"] = descs.get("INVOICE_DESC", "")
+    out["MOBILE_DESC"] = descs.get("MOBILE_DESC", "")
+    out["SHORT_DESC"] = descs.get("SHORT_DESC", "")
+    out["LONG_DESC1"] = descs.get("LONG_DESC1", "")
 
     # Populate ATTRIBUTE_LABEL/VALUE/UOM 1-7 from FOUND attributes only
     found_attrs = [a for a in enriched.attributes if a.state == "FOUND"]
@@ -91,7 +87,5 @@ def run(input_path: str, output_path: str, limit: int | None = None):
 
 
 if __name__ == "__main__":
-    import sys
-
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
     run("sample_data/input_slice.csv", "output_demo.csv", limit=limit)

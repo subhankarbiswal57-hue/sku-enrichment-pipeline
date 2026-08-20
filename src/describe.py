@@ -1,128 +1,295 @@
 """
-Stage 6 — Description Building.
+Stage 6 — Description Building  (Person B)
 
-Generates the different description formats the real output schema
-requires, using ONLY attributes marked FOUND — never inventing a claim
-that isn't backed by an extracted value. Casing/length behavior is
-reverse-engineered from the one worked example we have (the Frigidaire
-dishwasher row):
-  - INVOICE_DESC:  short, ALL CAPS   (worked example: "DISHWASHER LEG 5
-    SST 120V 15A 50-1/4IN" — 38 chars)
-  - MOBILE_DESC:   ~60-80 chars, sentence case, brand-led
-  - SHORT_DESC:    title/product-name style
-  - LONG_DESC1:    the fullest description, comma-separated spec list
+Generates the four description fields from FOUND attributes only.
+BLANK attributes are silently omitted — no placeholder text is ever inserted.
 
-We don't have the exact character-limit rulebook (content guidelines
-doc), so limits below are inferred from the worked example's actual
-lengths, not copied from a source we don't have. This is stated
-explicitly rather than presented as if it were the official rule.
+Lighting-specific formats (derived from the Frigidaire/Whirlpool ground truth
+structure and adapted for the Lighting category attributes):
+
+  INVOICE_DESC: "LED BULB 75W E26 4PK"          ALL CAPS, ≤40 chars
+  MOBILE_DESC:  "Philips, LED Bulb, 75 W, 2700 K, E26, 4-Pack"
+  SHORT_DESC:   "Philips 565374 LED Bulb, 75 W, E26 Base, 2700 K, 800 lm, 4-Pack"
+  LONG_DESC1:   "Philips LED Bulb, 75 W, 2700 K, 800 lm, 11000 h, E26 Base, 4-Pack, Dimmable"
+
+All four values are always str (never None).
 """
 
-from enrich import EnrichedRow
+from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+from models import Attribute, EnrichedRow
 
 
-def _found(attrs, label) -> str | None:
-    for a in attrs:
-        if a.label == label and a.state == "FOUND":
+# ---------------------------------------------------------------------------
+# Helper: look up a FOUND attribute value by label
+# ---------------------------------------------------------------------------
+
+def _found(attributes: list[Attribute], label: str) -> str | None:
+    """Return the value of the first FOUND attribute whose label matches, or None."""
+    for a in attributes:
+        if a.label == label and a.value is not None:
             return a.value
     return None
 
 
-def build_invoice_desc(row: EnrichedRow, manufacturer_name: str) -> str:
-    """ALL CAPS, short — matches worked example's style and rough length."""
-    watt = _found(row.attributes, "Wattage")
-    base = _found(row.attributes, "Base Type")
-    pack = _found(row.attributes, "Pack Quantity")
+def _found_uom(attributes: list[Attribute], label: str) -> str | None:
+    """Return the UOM of the first FOUND attribute whose label matches, or None."""
+    for a in attributes:
+        if a.label == label and a.value is not None:
+            return a.uom
+    return None
+
+
+def _with_uom(value: str | None, uom: str | None) -> str | None:
+    """Format value+uom with one space: '75 W', '2700 K'. Returns None if value is None."""
+    if value is None:
+        return None
+    if uom:
+        return f"{value} {uom}"
+    return value
+
+
+# ---------------------------------------------------------------------------
+# INVOICE_DESC — ALL CAPS, ≤40 chars
+# Format: "LED BULB <W>W <Base> <Qty>PK"
+# ---------------------------------------------------------------------------
+
+def build_invoice_desc(enriched: EnrichedRow, manufacturer_name: str | None) -> str:
+    """
+    ALL CAPS, at most 40 characters.
+    Incorporates: Wattage, Base Type, Pack Quantity — only if FOUND.
+    Truncates to the last full word within 40 chars.
+    """
+    attrs = enriched.attributes
+
+    wattage  = _found(attrs, "Wattage")
+    base     = _found(attrs, "Base Type")
+    pack     = _found(attrs, "Pack Quantity")
+    watt_uom = _found_uom(attrs, "Wattage")
 
     parts = ["LED BULB"]
-    if watt:
-        parts.append(f"{watt}W")
+    if wattage:
+        # e.g. "75W" (no space in invoice — compact form matches ground truth)
+        parts.append(f"{wattage}{watt_uom or 'W'}")
     if base:
         parts.append(base)
     if pack:
         parts.append(f"{pack}PK")
 
-    return " ".join(parts).upper()[:40]
+    result = " ".join(parts).upper()
+
+    # Truncate to last full word within 40 chars
+    if len(result) > 40:
+        truncated = result[:40]
+        last_space = truncated.rfind(" ")
+        result = truncated[:last_space] if last_space > 0 else truncated
+
+    return result
 
 
-def build_mobile_desc(row: EnrichedRow, manufacturer_name: str) -> str:
-    """Brand-led, sentence style, ~60-80 char target (not enforced here
-    since we don't have the exact character-limit spec)."""
-    watt = _found(row.attributes, "Wattage")
-    cct = _found(row.attributes, "Color Temperature")
+# ---------------------------------------------------------------------------
+# MOBILE_DESC — brand-led, sentence case, ~60-80 chars
+# Format: "<Brand>, LED Bulb, <W> W, <CCT> K, <Base>, <Qty>-Pack"
+# ---------------------------------------------------------------------------
 
-    parts = [manufacturer_name, "LED Bulb"]
-    if watt:
-        parts.append(f"{watt}W")
+def build_mobile_desc(enriched: EnrichedRow, manufacturer_name: str | None) -> str:
+    """
+    Brand-led, sentence case.
+    Starts with manufacturer_name, followed by LED Bulb, then FOUND attributes.
+    """
+    attrs  = enriched.attributes
+    brand  = (manufacturer_name or "").strip() or "Unknown Brand"
+
+    wattage = _found(attrs, "Wattage")
+    cct     = _found(attrs, "Color Temperature")
+    base    = _found(attrs, "Base Type")
+    pack    = _found(attrs, "Pack Quantity")
+    w_uom   = _found_uom(attrs, "Wattage")
+    c_uom   = _found_uom(attrs, "Color Temperature")
+
+    parts = [brand, "LED Bulb"]
+    if wattage:
+        parts.append(_with_uom(wattage, w_uom or "W"))
     if cct:
-        parts.append(f"{cct}K")
+        parts.append(_with_uom(cct, c_uom or "K"))
+    if base:
+        parts.append(base)
+    if pack:
+        parts.append(f"{pack}-Pack")
+
     return ", ".join(parts)
 
 
-def build_short_desc(row: EnrichedRow, manufacturer_name: str) -> str:
-    watt = _found(row.attributes, "Wattage")
-    base = _found(row.attributes, "Base Type")
-    pack = _found(row.attributes, "Pack Quantity")
+# ---------------------------------------------------------------------------
+# SHORT_DESC — title/product-name style
+# Format: "<Brand> <MPN> LED Bulb, <W> W, <Base> Base, <CCT> K, <Lumens> lm, <Qty>-Pack"
+# ---------------------------------------------------------------------------
 
-    bits = [manufacturer_name, "LED Bulb"]
-    if watt:
-        bits.append(f"{watt}W")
+def build_short_desc(enriched: EnrichedRow, manufacturer_name: str | None) -> str:
+    """
+    Title/product-name style with brand, MPN, and key FOUND attributes.
+    """
+    attrs  = enriched.attributes
+    brand  = (manufacturer_name or "").strip() or "Unknown Brand"
+    mpn    = enriched.mfg_part_num
+
+    wattage = _found(attrs, "Wattage")
+    base    = _found(attrs, "Base Type")
+    cct     = _found(attrs, "Color Temperature")
+    lumens  = _found(attrs, "Lumens")
+    pack    = _found(attrs, "Pack Quantity")
+    w_uom   = _found_uom(attrs, "Wattage")
+    c_uom   = _found_uom(attrs, "Color Temperature")
+    lm_uom  = _found_uom(attrs, "Lumens")
+
+    # Headline: "Philips 565374 LED Bulb"
+    headline = f"{brand} {mpn} LED Bulb"
+    specs = []
+
+    if wattage:
+        specs.append(_with_uom(wattage, w_uom or "W"))
     if base:
-        bits.append(f"{base} Base")
+        specs.append(f"{base} Base")
+    if cct:
+        specs.append(_with_uom(cct, c_uom or "K"))
+    if lumens:
+        specs.append(_with_uom(lumens, lm_uom or "lm"))
     if pack:
-        bits.append(f"{pack}-Pack")
-    return " ".join(bits)
+        specs.append(f"{pack}-Pack")
+
+    if specs:
+        return headline + ", " + ", ".join(specs)
+    return headline
 
 
-def build_long_desc(row: EnrichedRow, manufacturer_name: str) -> str:
-    """Full comma-separated spec list — only from FOUND attributes."""
-    bits = [f"{manufacturer_name} LED Bulb"]
-    for label, uom in [
-        ("Wattage", "W"),
-        ("Color Temperature", "K"),
-        ("Lumens", "lm"),
-        ("Rated Life", "h"),
-        ("Base Type", None),
-        ("Pack Quantity", None),
-        ("Dimmable", None),
-    ]:
-        val = _found(row.attributes, label)
-        if not val:
+# ---------------------------------------------------------------------------
+# LONG_DESC1 — full comma-separated spec list
+# Fixed attribute order (BLANK attrs skipped):
+#   Wattage → Color Temp → Lumens → Rated Life → Base Type → Pack Qty → Dimmable
+# ---------------------------------------------------------------------------
+
+def build_long_desc(enriched: EnrichedRow, manufacturer_name: str | None) -> str:
+    """
+    Full comma-separated specification string.
+    BLANK attributes are silently omitted (no placeholders).
+    """
+    attrs  = enriched.attributes
+    brand  = (manufacturer_name or "").strip() or "Unknown Brand"
+
+    # Build ordered spec list
+    spec_order = [
+        ("Wattage",           _found_uom(attrs, "Wattage")           or "W"),
+        ("Color Temperature", _found_uom(attrs, "Color Temperature") or "K"),
+        ("Lumens",            _found_uom(attrs, "Lumens")            or "lm"),
+        ("Rated Life",        _found_uom(attrs, "Rated Life")        or "h"),
+        ("Base Type",         None),
+        ("Pack Quantity",     None),
+        ("Dimmable",          None),
+    ]
+
+    bits = [f"{brand} LED Bulb"]
+
+    for label, uom in spec_order:
+        val = _found(attrs, label)
+        if val is None:
             continue
-        if label == "Pack Quantity":
+        if label == "Base Type":
+            bits.append(f"{val} Base")
+        elif label == "Pack Quantity":
             bits.append(f"{val}-Pack")
         elif label == "Dimmable":
             bits.append("Dimmable")
-        elif label == "Base Type":
-            bits.append(f"{val} Base")
-        elif uom:
-            bits.append(f"{val} {uom}")
         else:
-            bits.append(val)
+            bits.append(_with_uom(val, uom))
+
+    # If nothing was found beyond the brand prefix, return empty string
+    if len(bits) == 1:
+        return ""
+
     return ", ".join(bits)
 
 
-def build_all(row: EnrichedRow, manufacturer_name: str) -> dict:
+# ---------------------------------------------------------------------------
+# build_all — single call returns all four descriptions
+# ---------------------------------------------------------------------------
+
+def build_all(enriched: EnrichedRow, manufacturer_name: str | None) -> dict[str, str]:
+    """
+    Returns a dict with exactly five keys:
+        INVOICE_DESC, MOBILE_DESC, SHORT_DESC, LONG_DESC1, RETAIL_DESC
+    All values are str (never None).
+
+    RETAIL_DESC is a concise retail-facing description — shorter than LONG_DESC1,
+    suitable for a product listing page. Uses key FOUND attributes only.
+    """
+    attrs  = enriched.attributes
+    brand  = (manufacturer_name or "").strip() or "Unknown Brand"
+
+    wattage = _found(attrs, "Wattage")
+    cct     = _found(attrs, "Color Temperature")
+    base    = _found(attrs, "Base Type")
+    pack    = _found(attrs, "Pack Quantity")
+    lumens  = _found(attrs, "Lumens")
+    w_uom   = _found_uom(attrs, "Wattage")
+    c_uom   = _found_uom(attrs, "Color Temperature")
+    lm_uom  = _found_uom(attrs, "Lumens")
+
+    # RETAIL_DESC: concise retail format — brand, item type, key specs
+    retail_parts = [f"{brand} LED Bulb"]
+    if wattage:
+        retail_parts.append(_with_uom(wattage, w_uom or "W"))
+    if cct:
+        retail_parts.append(_with_uom(cct, c_uom or "K"))
+    if base:
+        retail_parts.append(f"{base} Base")
+    if lumens:
+        retail_parts.append(_with_uom(lumens, lm_uom or "lm"))
+    if pack:
+        retail_parts.append(f"{pack}-Pack")
+    retail_desc = ", ".join(retail_parts) if len(retail_parts) > 1 else ""
+
     return {
-        "INVOICE_DESC": build_invoice_desc(row, manufacturer_name),
-        "MOBILE_DESC": build_mobile_desc(row, manufacturer_name),
-        "SHORT_DESC": build_short_desc(row, manufacturer_name),
-        "LONG_DESC1": build_long_desc(row, manufacturer_name),
+        "INVOICE_DESC": build_invoice_desc(enriched, manufacturer_name),
+        "MOBILE_DESC":  build_mobile_desc(enriched, manufacturer_name),
+        "SHORT_DESC":   build_short_desc(enriched, manufacturer_name),
+        "LONG_DESC1":   build_long_desc(enriched, manufacturer_name),
+        "RETAIL_DESC":  retail_desc,
     }
 
 
-if __name__ == "__main__":
-    from enrich import enrich
-    from ingest import load_and_clean
+# ---------------------------------------------------------------------------
+# Quick smoke test
+# ---------------------------------------------------------------------------
 
-    rows = load_and_clean("sample_data/input_slice.csv")
-    by_part = {r.mfg_part_num: r for r in rows}
+if __name__ == "__main__":
+    import os as _os
+    _os.environ.pop("XAI_API_KEY", None)
+
+    from models import CleanRow
+
+    try:
+        from ingest import load_and_clean
+        from enrich import enrich
+        rows = {r.mfg_part_num: r for r in load_and_clean("sample_data/input_slice.csv")}
+    except ImportError:
+        from enrich import enrich
+        rows = {
+            "565374": CleanRow("565374", "565374 75W Led A19 Med 27k 4pk",
+                               None, None, None, "Phillips Lighting", "5831"),
+        }
 
     for part_num in ["565374", "586875"]:
-        raw_row = by_part[part_num]
+        if part_num not in rows:
+            continue
+        raw_row  = rows[part_num]
         enriched = enrich(raw_row)
-        descs = build_all(enriched, raw_row.manufacturer_name)
-        print(part_num, "|", raw_row.part_desc)
-        for k, v in descs.items():
-            print(f"  {k} ({len(v)} chars): {v}")
-        print()
+        descs    = build_all(enriched, raw_row.manufacturer_name)
+
+        print(f"\n{part_num} | {raw_row.part_desc}")
+        for key, val in descs.items():
+            print(f"  {key} ({len(val)} chars): {val}")
