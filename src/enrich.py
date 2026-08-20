@@ -360,9 +360,6 @@ def _extract_manufacturer_only_fields(
 
 
 # ---------------------------------------------------------------------------
-# Main entry point: enrich(row) -> EnrichedRow
-# ---------------------------------------------------------------------------
-
 def enrich(row: CleanRow) -> EnrichedRow:
     """
     Run full attribute extraction for one input row.
@@ -377,11 +374,17 @@ def enrich(row: CleanRow) -> EnrichedRow:
 
     # Step 2: manufacturer source lookup
     retrieve_mod = _get_retrieve()
-    source = retrieve_mod.retrieve(row.mfg_part_num) if retrieve_mod else None
+    if retrieve_mod:
+        try:
+            source = retrieve_mod.retrieve(row.mfg_part_num, row.manufacturer_name)
+        except TypeError:
+            source = retrieve_mod.retrieve(row.mfg_part_num)
+    else:
+        source = None
 
     # Step 3: source-based extraction
     if source:
-        source_url  = source["source_url"]
+        source_url = source["source_url"]
         source_text = source["source_text"]
         if _API_KEY:
             source_attrs = _llm_extract_from_source(source_text, source_url)
@@ -415,6 +418,7 @@ def enrich(row: CleanRow) -> EnrichedRow:
 # ---------------------------------------------------------------------------
 # Quick smoke test
 # ---------------------------------------------------------------------------
+
 
 if __name__ == "__main__":
     import sys as _sys
