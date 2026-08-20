@@ -199,7 +199,7 @@ with tab_batch:
                     out_rows = []
                     prog = st.progress(0.0)
                     for i, r in enumerate(clean_uploaded):
-                        out_row, _, _ = build_output_row(r, headers)
+                        out_row = build_output_row(r, headers)
                         out_rows.append(out_row)
                         prog.progress((i + 1) / len(clean_uploaded))
                     

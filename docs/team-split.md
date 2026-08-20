@@ -16,10 +16,10 @@
 | `src/classify.py` | ✅ Done | A | Dept>Class>Fine priority taxonomy, returns Classification with found flag |
 | `src/retrieve.py` | ✅ Done | A | Curated manifest cache + live DuckDuckGo fallback + marketplace blocking |
 | `src/pipeline.py` | ✅ Done | C | Complete orchestration, wires A & B, outputs exact 252 delivery columns |
-| `src/evaluate.py` | ⏳ Pending | D | |
-| `app.py` | ⏳ Pending | D | **Must have CSV upload tab** |
-| `sample_data/eval_set.csv` | ⏳ Pending | D | |
-| `tests/` | ⏳ Pending | D | |
+| `src/evaluate.py` | ✅ Done | D | Hand-verified ground-truth scoring against eval_set.csv |
+| `app.py` | ✅ Done | D | Streamlit studio with single SKU deep-dive + batch CSV upload & 252-col export |
+| `sample_data/eval_set.csv` | ✅ Done | D | 14 hand-verified ground truth attributes for curated Philips SKUs |
+| `tests/` | ✅ Done | D | 29 property & contract unit tests across all pipeline stages (Hypothesis + pytest) |
 | `scripts/test_person_b.py` | ✅ Done | B | Full test with inline stubs |
 
 **Key model changes from the video (already applied to `models.py` + `enrich.py` + `describe.py`):**
