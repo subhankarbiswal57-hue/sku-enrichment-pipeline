@@ -71,15 +71,19 @@ Run it yourself: `python3 src/evaluate.py`
 ```bash
 pip install -r requirements.txt
 
-# Run the pipeline on the real 111-row input slice, writing the real
-# 252-column output format:
-python3 src/pipeline.py          # all 111 rows
-python3 src/pipeline.py 15       # first 15 rows only
+# Run the end-to-end demo showcase:
+python3 demo.py
 
-# Run the evaluation:
+# Run the pipeline on the real input slice, writing the real 252-column output:
+python3 src/pipeline.py --limit 15
+
+# Run the evaluation against hand-verified ground truth:
 python3 src/evaluate.py
 
-# Launch the demo UI:
+# Run property & contract unit tests:
+pytest tests/ -v
+
+# Launch the Streamlit Studio UI:
 streamlit run app.py
 ```
 

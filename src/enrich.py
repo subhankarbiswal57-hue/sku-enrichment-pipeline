@@ -306,12 +306,8 @@ def _llm_extract_from_source(source_text: str, source_url: str) -> list[Attribut
         return attrs
 
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, Exception) as exc:
-        logger.warning("Grok API call failed for source %s: %s", source_url, exc)
-        return [
-            make_blank_attr("Lumens",     "API error"),
-            make_blank_attr("Rated Life", "API error"),
-            make_blank_attr("Dimmable",   "API error"),
-        ]
+        logger.warning("LLM API call failed for source %s: %s — using regex fallback", source_url, exc)
+        return _fallback_extract_from_source(source_text, source_url)
 
 
 # ---------------------------------------------------------------------------
