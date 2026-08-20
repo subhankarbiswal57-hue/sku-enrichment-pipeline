@@ -11,10 +11,10 @@
 | `src/__init__.py` | ✅ Done | Shared | Package marker |
 | `src/enrich.py` | ✅ Done | B | 7 attrs, FOUND/BLANK, Grok API + fallback, marketing_description + item_features extracted from source |
 | `src/describe.py` | ✅ Done | B | 5 descriptions: INVOICE, MOBILE, SHORT, LONG, RETAIL |
-| `src/ingest.py` | ⏳ Pending | A | |
-| `src/normalize.py` | ⏳ Pending | A | |
-| `src/classify.py` | ⏳ Pending | A | |
-| `src/retrieve.py` | ⏳ Pending | A | **Must be live search + curated cache — not hardcoded** |
+| `src/ingest.py` | ✅ Done | A | Cleans placeholders, parses mfg code, raises IOError/ValueError |
+| `src/normalize.py` | ✅ Done | A | Deterministic wattage (W), CCT (K), pack qty, base type |
+| `src/classify.py` | ✅ Done | A | Dept>Class>Fine priority taxonomy, returns Classification with found flag |
+| `src/retrieve.py` | ✅ Done | A | Curated manifest cache + live DuckDuckGo fallback + marketplace blocking |
 | `src/pipeline.py` | ⏳ Pending | C | |
 | `src/evaluate.py` | ⏳ Pending | D | |
 | `app.py` | ⏳ Pending | D | **Must have CSV upload tab** |
@@ -94,11 +94,31 @@ from models import make_found_attr, make_blank_attr, ATTRIBUTE_LABELS
 
 ---
 
-## Person A — Data Pipeline Core
+## Person A — ✅ DONE
 
-**You own:** `src/ingest.py`, `src/normalize.py`, `src/classify.py`, `src/retrieve.py`
+**`src/ingest.py`, `src/normalize.py`, `src/classify.py`, and `src/retrieve.py` are complete.**
 
-**Person B's enrich.py already uses your modules via lazy import — it degrades gracefully until your code lands. Aim to finish by 17 Aug.**
+**Verify — Mac/Linux:**
+```bash
+python3 -c "import sys; sys.path.insert(0,'src'); from ingest import load_and_clean; rows=load_and_clean('sample_data/input_slice.csv'); print('Ingest OK:', len(rows), 'rows')"
+python3 -c "import sys; sys.path.insert(0,'src'); from normalize import parse_wattage,parse_cct,parse_pack_qty,parse_base_type; d='565374 75W Led A19 Med 27k 4pk'; print('Normalize OK:', parse_wattage(d), parse_cct(d), parse_pack_qty(d), parse_base_type(d))"
+python3 -c "import sys; sys.path.insert(0,'src'); from classify import classify; from ingest import CleanRow; c=classify(CleanRow('565374','75W Led A19 Med 27k 4pk',None,None,None,'Phillips Lighting','5831')); print('Classify OK:', c.classpath, 'found=' + str(c.found))"
+python3 -c "import sys; sys.path.insert(0,'src'); from retrieve import retrieve; r=retrieve('565374'); print('Retrieve OK:', r['source_url'] if r else 'NOT FOUND')"
+```
+
+**Verify — Windows (cmd):**
+```cmd
+python -c "import sys; sys.path.insert(0,'src'); from ingest import load_and_clean; rows=load_and_clean('sample_data/input_slice.csv'); print('Ingest OK:', len(rows), 'rows')"
+python -c "import sys; sys.path.insert(0,'src'); from normalize import parse_wattage,parse_cct,parse_pack_qty,parse_base_type; d='565374 75W Led A19 Med 27k 4pk'; print('Normalize OK:', parse_wattage(d), parse_cct(d), parse_pack_qty(d), parse_base_type(d))"
+python -c "import sys; sys.path.insert(0,'src'); from classify import classify; from ingest import CleanRow; c=classify(CleanRow('565374','75W Led A19 Med 27k 4pk',None,None,None,'Phillips Lighting','5831')); print('Classify OK:', c.classpath, 'found=' + str(c.found))"
+python -c "import sys; sys.path.insert(0,'src'); from retrieve import retrieve; r=retrieve('565374'); print('Retrieve OK:', r['source_url'] if r else 'NOT FOUND')"
+```
+
+**What's done:**
+- `src/ingest.py`: Filters placeholders (`-- Unbranded --`, `N/A`, `NULL`), parses manufacturer code e.g. `Phillips Lighting (5831)` $\rightarrow$ `("Phillips Lighting", "5831")`, validates 6 required headers and returns `list[CleanRow]`.
+- `src/normalize.py`: Deterministic parsers for `Wattage` (`75 W`), `Color Temperature` (`2700 K`), `Pack Quantity` (`4`), and `Base Type` (`E26`).
+- `src/classify.py`: 4-tier taxonomy priority (`strip` $\rightarrow$ `LED Strip Lights`, `led`/shape $\rightarrow$ `LED Bulbs`, generic $\rightarrow$ `Light Bulbs`, fallback $\rightarrow$ `""` with `found=False`).
+- `src/retrieve.py`: Multi-tier source discovery (Tier 1 curated manifest fast-path + Tier 2 live DuckDuckGo search fallback) with strict marketplace domain rejection (`amazon.`, `ebay.`, `homedepot.`, `lowes.`, etc.) and HTML text cleaner.
 
 ---
 
@@ -112,20 +132,10 @@ PLACEHOLDER_VALUES = frozenset({
 })
 MANUF_CODE_RE = re.compile(r"^(?P<name>.+?)\s*\((?P<code>[A-Za-z0-9]+)\)\s*$")
 
-def clean_brand(v: str) -> str | None: ...
-def parse_manufacturer(raw: str) -> tuple[str | None, str | None]: ...
+def clean_brand(v: str | None) -> str | None: ...
+def parse_manufacturer(raw: str | None) -> tuple[str | None, str | None]: ...
 def load_and_clean(path: str) -> list[CleanRow]: ...
 # Raises IOError if file unreadable, ValueError naming missing columns
-```
-
-**Test — Mac/Linux:**
-```bash
-python3 -c "import sys; sys.path.insert(0,'src'); from ingest import load_and_clean; rows=load_and_clean('sample_data/input_slice.csv'); print(len(rows), 'rows')"
-```
-
-**Test — Windows (cmd):**
-```cmd
-python -c "import sys; sys.path.insert(0,'src'); from ingest import load_and_clean; rows=load_and_clean('sample_data/input_slice.csv'); print(len(rows), 'rows')"
 ```
 
 ---
@@ -133,7 +143,7 @@ python -c "import sys; sys.path.insert(0,'src'); from ingest import load_and_cle
 ### File 2: `src/normalize.py`
 
 ```python
-WATTAGE_RE  = re.compile(r"(?<![A-Za-z])(\d+)\s*[wW]\b")
+WATTAGE_RE  = re.compile(r"(?<![A-Za-z])(\d+(?:\.\d+)?)\s*[wW]\b")
 CCT_RE      = re.compile(r"\b([2-7]\d)[kK]\b")
 PACK_RE     = re.compile(r"(\d+)\s*pk\b", re.IGNORECASE)
 BASE_TYPE_MAP = {"med":"E26","medium":"E26","e26":"E26","e27":"E26","cand":"E12","candelabra":"E12"}
@@ -143,18 +153,6 @@ def parse_cct(desc: str) -> str | None:       # "27k" → "2700 K"
 def parse_pack_qty(desc: str) -> str | None:  # "4pk" → "4"
 def parse_base_type(desc: str) -> str | None: # "Med" → "E26"
 ```
-
-**Test — Mac/Linux:**
-```bash
-python3 -c "import sys; sys.path.insert(0,'src'); from normalize import parse_wattage,parse_cct,parse_pack_qty,parse_base_type; d='565374 75W Led A19 Med 27k 4pk'; print(parse_wattage(d), parse_cct(d), parse_pack_qty(d), parse_base_type(d))"
-```
-
-**Test — Windows (cmd):**
-```cmd
-python -c "import sys; sys.path.insert(0,'src'); from normalize import parse_wattage,parse_cct,parse_pack_qty,parse_base_type; d='565374 75W Led A19 Med 27k 4pk'; print(parse_wattage(d), parse_cct(d), parse_pack_qty(d), parse_base_type(d))"
-```
-
-Expected: `75 W  2700 K  4  E26`
 
 ---
 
@@ -173,28 +171,18 @@ def classify(row: CleanRow) -> Classification:
 
 ---
 
-### File 4: `src/retrieve.py` ⚠️ CRITICAL — must be live search, not hardcoded
+### File 4: `src/retrieve.py`
 
 ```python
 # Architecture: curated cache (fast-path) + live DuckDuckGo search (fallback)
-BLOCKED_DOMAINS = {"amazon.", "ebay.", "homedepot.", "grainger.", "lowes.", "walmart.", "tractorsupply."}
+BLOCKED_DOMAINS = frozenset({"amazon.", "ebay.", "homedepot.", "grainger.", "lowes.", "walmart.", "tractorsupply."})
 
-def retrieve(mfg_part_num: str) -> dict | None:
+def retrieve(mfg_part_num: str, manufacturer_name: str | None = None) -> dict | None:
     # 1. Check curated manifest first
     # 2. If not found: DuckDuckGo search "<manufacturer> <part_num> specifications"
     # 3. Fetch first non-marketplace URL
     # 4. Return {"source_url": str, "source_text": str} or None
     # 5. NEVER raises — log warnings only
-```
-
-**Test — Mac/Linux:**
-```bash
-python3 -c "import sys; sys.path.insert(0,'src'); from retrieve import retrieve; r=retrieve('565374'); print(r['source_url'] if r else 'NOT FOUND')"
-```
-
-**Test — Windows (cmd):**
-```cmd
-python -c "import sys; sys.path.insert(0,'src'); from retrieve import retrieve; r=retrieve('565374'); print(r['source_url'] if r else 'NOT FOUND')"
 ```
 
 ---
@@ -350,7 +338,7 @@ type nul > tests\conftest.py
 
 | Person | Output | Consumed by |
 |--------|--------|-------------|
-| A | `CleanRow`, `Classification`, normalize functions, `retrieve()` | B (already wired), C |
+| A ✅ | `CleanRow`, `Classification`, normalize functions, `retrieve()` | B (already wired), C |
 | B ✅ | `EnrichedRow`, `build_all()` → 5 descriptions, `marketing_description`, `item_features` | C, D |
 | C | `output_demo.csv` | D (evaluate.py) |
 | D | Eval numbers, upload UI, test results | Everyone (pitch deck) |
