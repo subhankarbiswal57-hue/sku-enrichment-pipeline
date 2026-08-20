@@ -83,9 +83,8 @@ def _deterministic_attributes(row: CleanRow) -> list[Attribute]:
 
 
 def _fallback_extract_from_source(source_text: str) -> list[Attribute]:
-    """Regex stand-in for the LLM extraction call, used when no
-    XAI_API_KEY is set. Only reads what's literally present in the
-    fetched manufacturer page text — same 'no invention' rule applies."""
+    """Regex extractor for manufacturer page text. Only reads what's
+    literally present in the fetched manufacturer page text."""
     lumens_m = LUMENS_RE.search(source_text)
     life_m = LIFE_HOURS_RE.search(source_text)
     dimmable = bool(DIMMING_RE.search(source_text))
@@ -98,17 +97,15 @@ def _fallback_extract_from_source(source_text: str) -> list[Attribute]:
 
 
 def _llm_extract_from_source(source_text: str, source_url: str) -> list[Attribute]:
-    """Real Grok API call. Requires XAI_API_KEY and outbound network
-    access to api.x.ai (not available in every sandboxed environment —
-    run this from wherever the team's actual build/deploy happens)."""
+    """Real LLM extraction call from manufacturer source text."""
     import urllib.request
 
     system_prompt = (
         "Extract product attributes (Lumens, Rated Life in hours, Dimmable "
-        "yes/no) from the manufacturer page text below. Return ONLY a JSON "
+        "yes/no, Base Type) from the manufacturer page text below. Return ONLY a JSON "
         "object: {\"lumens\": <number or null>, \"rated_life_hours\": "
-        "<number or null>, \"dimmable\": <true/false/null>}. Use null for "
-        "anything not explicitly stated in the text — never guess."
+        "<number or null>, \"dimmable\": <true/false/null>, \"base_type\": <string or null>}. "
+        "Use null for anything not explicitly stated in the text — never guess."
     )
     payload = {
         "model": MODEL,
@@ -141,11 +138,8 @@ def _llm_extract_from_source(source_text: str, source_url: str) -> list[Attribut
 def enrich(row: CleanRow) -> EnrichedRow:
     attributes = _deterministic_attributes(row)
 
-    source = retrieve(row.mfg_part_num)
+    source = retrieve(row.mfg_part_num, row.manufacturer_name)
     if source is None:
-        # No manufacturer source found for this SKU in the curated set —
-        # everything beyond the deterministic attributes stays UNKNOWN,
-        # never guessed.
         attributes += [
             _attr("Lumens", None, "lm", "no_source"),
             _attr("Rated Life", None, "h", "no_source"),
@@ -153,12 +147,23 @@ def enrich(row: CleanRow) -> EnrichedRow:
         ]
         return EnrichedRow(row.mfg_part_num, row.part_desc, None, attributes)
 
+    # If base type was not found in part_desc, attempt extraction from source text
+    base_attr = next((a for a in attributes if a.label == "Base Type"), None)
+    if base_attr and base_attr.state == "UNKNOWN":
+        source_base = parse_base_type(source["source_text"])
+        if source_base:
+            base_attr.value = source_base
+            base_attr.state = "FOUND"
+            base_attr.confidence = "Medium"
+            base_attr.evidence_note = "manufacturer_source"
+
     if XAI_API_KEY:
         source_attrs = _llm_extract_from_source(source["source_text"], source["source_url"])
     else:
         source_attrs = _fallback_extract_from_source(source["source_text"])
 
     return EnrichedRow(row.mfg_part_num, row.part_desc, source["source_url"], attributes + source_attrs)
+
 
 
 if __name__ == "__main__":
