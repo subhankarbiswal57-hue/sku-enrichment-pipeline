@@ -25,6 +25,13 @@ import urllib.request
 import urllib.error
 from typing import TYPE_CHECKING
 
+# Load .env file if present (so XAI_API_KEY is picked up automatically)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+except ImportError:
+    pass  # dotenv not installed — rely on environment variable being set manually
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from models import (
