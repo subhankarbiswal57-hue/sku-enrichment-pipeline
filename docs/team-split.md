@@ -37,20 +37,55 @@ Already in the repo:
 - `sample_data/input_slice.csv` — 228 Lighting rows
 - `sample_data/curated_sources/manifest.json` + 2 Philips `.txt` source files
 
-Verify on your machine:
+**Clone the repo (everyone):**
+
+Mac/Linux:
 ```bash
-cd /Users/shazam/Downloads/sku-enrichment-pipeline
+git clone https://github.com/shazamcodes64/sku-enrichment-pipeline.git
+cd sku-enrichment-pipeline
+```
+
+Windows (cmd):
+```cmd
+git clone https://github.com/shazamcodes64/sku-enrichment-pipeline.git
+cd sku-enrichment-pipeline
+```
+
+**Install dependencies:**
+
+Mac/Linux:
+```bash
+pip3 install -r requirements.txt
+```
+
+Windows (cmd):
+```cmd
+pip install -r requirements.txt
+```
+
+**Verify models work:**
+
+Mac/Linux:
+```bash
 python3 scripts/test_models.py
 ```
+
+Windows (cmd):
+```cmd
+python scripts\test_models.py
+```
+
+Expected output: `All models OK.`
 
 ---
 
 ## Standard Import
 
+Every file you write starts with:
 ```python
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-# or from project root:
+# or when running from project root:
 sys.path.insert(0, 'src')
 
 from models import CleanRow, Attribute, Classification, EnrichedRow
@@ -63,7 +98,7 @@ from models import make_found_attr, make_blank_attr, ATTRIBUTE_LABELS
 
 **You own:** `src/ingest.py`, `src/normalize.py`, `src/classify.py`, `src/retrieve.py`
 
-**Person B's enrich.py already uses your modules via lazy import — it degrades gracefully until you land your code. Aim to finish by 17 Aug.**
+**Person B's enrich.py already uses your modules via lazy import — it degrades gracefully until your code lands. Aim to finish by 17 Aug.**
 
 ---
 
@@ -83,9 +118,14 @@ def load_and_clean(path: str) -> list[CleanRow]: ...
 # Raises IOError if file unreadable, ValueError naming missing columns
 ```
 
-Test:
+**Test — Mac/Linux:**
 ```bash
 python3 -c "import sys; sys.path.insert(0,'src'); from ingest import load_and_clean; rows=load_and_clean('sample_data/input_slice.csv'); print(len(rows), 'rows')"
+```
+
+**Test — Windows (cmd):**
+```cmd
+python -c "import sys; sys.path.insert(0,'src'); from ingest import load_and_clean; rows=load_and_clean('sample_data/input_slice.csv'); print(len(rows), 'rows')"
 ```
 
 ---
@@ -104,10 +144,16 @@ def parse_pack_qty(desc: str) -> str | None:  # "4pk" → "4"
 def parse_base_type(desc: str) -> str | None: # "Med" → "E26"
 ```
 
-Test:
+**Test — Mac/Linux:**
 ```bash
 python3 -c "import sys; sys.path.insert(0,'src'); from normalize import parse_wattage,parse_cct,parse_pack_qty,parse_base_type; d='565374 75W Led A19 Med 27k 4pk'; print(parse_wattage(d), parse_cct(d), parse_pack_qty(d), parse_base_type(d))"
 ```
+
+**Test — Windows (cmd):**
+```cmd
+python -c "import sys; sys.path.insert(0,'src'); from normalize import parse_wattage,parse_cct,parse_pack_qty,parse_base_type; d='565374 75W Led A19 Med 27k 4pk'; print(parse_wattage(d), parse_cct(d), parse_pack_qty(d), parse_base_type(d))"
+```
+
 Expected: `75 W  2700 K  4  E26`
 
 ---
@@ -121,75 +167,60 @@ BULB_SHAPE_RE = re.compile(r"\b(A19|A15|ST19|MR16|R20|R14|PAR20|PAR30|PAR38|BR30
 
 def classify(row: CleanRow) -> Classification:
     # Priority: strip → led/shape → flor/sodium/halogen/lamp/bulb/highbay/downlight/pendant → blank
-    # Classpath format: "Lighting & Ceiling Fans>Light Bulbs>LED Bulbs"  (single >, no spaces)
+    # Classpath: "Lighting & Ceiling Fans>Light Bulbs>LED Bulbs"  (single >, no spaces)
     # No match → all fields "", found=False  (NOT "UNKNOWN")
 ```
 
 ---
 
-### File 4: `src/retrieve.py` ⚠️ CRITICAL CHANGE FROM VIDEO
-
-**The evaluators explicitly said "avoid hardcoded or mocked outputs." The old 2-SKU lookup is not acceptable.**
+### File 4: `src/retrieve.py` ⚠️ CRITICAL — must be live search, not hardcoded
 
 ```python
 # Architecture: curated cache (fast-path) + live DuckDuckGo search (fallback)
-# Marketplace domains excluded at code level: amazon., ebay., homedepot., grainger., lowes.
-
-CURATED_DIR = os.path.join(os.path.dirname(__file__), '..', 'sample_data', 'curated_sources')
-_MANIFEST: dict = {}   # loaded once at module level
-
-def retrieve(mfg_part_num: str) -> dict | None:
-    """
-    1. Check curated manifest first (fast-path for known SKUs)
-    2. If not found: run live web search for "<manufacturer> <part_num> specifications site:<manufacturer_domain>"
-    3. Fetch the best result that is NOT a marketplace/distributor domain
-    4. Return {"source_url": str, "source_text": str} or None
-    5. NEVER raises — return None on any failure, log warning
-    """
-```
-
-**Live search approach (no API key needed):**
-```python
-import urllib.request, urllib.parse
-
-def _duckduckgo_search(query: str) -> list[str]:
-    """Return up to 5 URLs from DuckDuckGo HTML search. Filter out marketplace domains."""
-    url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
-    # Parse <a class="result__a" href="..."> links from HTML response
-    # Filter: skip amazon., ebay., homedepot., grainger., lowes., walmart.
-    ...
-
 BLOCKED_DOMAINS = {"amazon.", "ebay.", "homedepot.", "grainger.", "lowes.", "walmart.", "tractorsupply."}
 
-def _is_allowed_domain(url: str) -> bool:
-    return not any(d in url.lower() for d in BLOCKED_DOMAINS)
+def retrieve(mfg_part_num: str) -> dict | None:
+    # 1. Check curated manifest first
+    # 2. If not found: DuckDuckGo search "<manufacturer> <part_num> specifications"
+    # 3. Fetch first non-marketplace URL
+    # 4. Return {"source_url": str, "source_text": str} or None
+    # 5. NEVER raises — log warnings only
 ```
 
-Test:
+**Test — Mac/Linux:**
 ```bash
 python3 -c "import sys; sys.path.insert(0,'src'); from retrieve import retrieve; r=retrieve('565374'); print(r['source_url'] if r else 'NOT FOUND')"
+```
+
+**Test — Windows (cmd):**
+```cmd
+python -c "import sys; sys.path.insert(0,'src'); from retrieve import retrieve; r=retrieve('565374'); print(r['source_url'] if r else 'NOT FOUND')"
 ```
 
 ---
 
 ## Person B — ✅ DONE
 
-**`src/enrich.py` and `src/describe.py` are complete and passing all tests.**
+**`src/enrich.py` and `src/describe.py` are complete.**
 
-Run to verify:
+**Verify — Mac/Linux:**
 ```bash
 python3 scripts/test_person_b.py
 ```
 
-**What was completed:**
-- 7 attributes in fixed order (Wattage, Color Temperature, Pack Quantity, Base Type, Lumens, Rated Life, Dimmable)
-- FOUND/BLANK state with High/Medium/Low confidence
-- Grok API extraction + regex fallback (no API key needed for testing)
-- `marketing_description` and `item_features` extracted from manufacturer source (manufacturer-only, never generated)
-- `is_novel_value` flag on Attribute for values not in any known LOV
-- 5 description formats: INVOICE_DESC (≤40 chars ALL CAPS), MOBILE_DESC, SHORT_DESC, LONG_DESC1, RETAIL_DESC
+**Verify — Windows (cmd):**
+```cmd
+python scripts\test_person_b.py
+```
 
-**No further changes needed unless Person A or C expose a bug.**
+Expected: `All assertions passed. Person B modules OK.`
+
+**What's done:**
+- 7 attributes in fixed order (Wattage, Color Temperature, Pack Quantity, Base Type, Lumens, Rated Life, Dimmable)
+- FOUND/BLANK states, High/Medium/Low confidence, `is_novel_value` flag
+- Grok API + regex fallback (no API key needed for testing)
+- `marketing_description` and `item_features` from manufacturer source only
+- 5 descriptions: INVOICE_DESC (≤40 chars ALL CAPS), MOBILE_DESC, SHORT_DESC, LONG_DESC1, RETAIL_DESC
 
 ---
 
@@ -197,41 +228,9 @@ python3 scripts/test_person_b.py
 
 **You own:** `src/pipeline.py`
 
-**Depends on A and B. B is done. Wait for A's ingest/normalize/classify/retrieve, then wire everything together.**
+**Depends on A (ingest/classify/retrieve) and B (done). Wire everything together.**
 
-### Updated requirements from the video:
-
-In addition to the original 252-column output, the pipeline must now also write:
-
-1. **`RETAIL_DESC`** — already produced by `build_all()` (5th key), write it to the `RETAIL_DESC` column
-2. **`MARKETING_DESCRIPTION`** — use `enriched.marketing_description` (from manufacturer source only); write to the `MARKETING_DESCRIPTION` column; leave blank if `None`
-3. **`ITEM_FEATURES_1` through `ITEM_FEATURES_20`** — use `enriched.item_features` list; write each feature to `ITEM_FEATURES_1`, `ITEM_FEATURES_2`, etc. (up to 20); leave remainder blank
-
-```python
-import csv, json, os, sys, argparse
-from models import CleanRow
-
-def load_real_headers() -> list[str]:
-    """Load from sample_data/real_output_headers.json — 252 headers in exact order."""
-
-def build_output_row(row: CleanRow, headers: list[str]) -> dict[str, str]:
-    """
-    1. out = {h: "" for h in headers}
-    2. classify(row) → classification
-    3. enrich(row)   → enriched
-    4. build_all(enriched, row.manufacturer_name) → descs (5 keys now)
-    5. Populate columns — see rules below
-    6. assert all(isinstance(v, str) for v in out.values())
-    7. return out
-    """
-
-def run(input_path: str, output_path: str, limit: int | None = None) -> None: ...
-
-if __name__ == "__main__":
-    # argparse: --limit N, --input, --output
-```
-
-**Column population rules:**
+### Column population rules
 
 | Condition | Columns |
 |-----------|---------|
@@ -240,17 +239,23 @@ if __name__ == "__main__":
 | `enriched.mfr_url is not None` | `MFR URL` |
 | `enriched.ref_urls` has entries | `Ref URL 1` … `Ref URL 5` |
 | `enriched.marketing_description is not None` | `MARKETING_DESCRIPTION` |
-| `enriched.item_features` has entries | `ITEM_FEATURES_1` … `ITEM_FEATURES_20` (up to 20, sequential) |
+| `enriched.item_features` has entries | `ITEM_FEATURES_1` … `ITEM_FEATURES_20` (up to 20) |
 | Each FOUND attribute | `ATTRIBUTE_LABEL N`, `ATTRIBUTE_VALUE N`, `ATTRIBUTE_UOM N` (sequential, no gaps) |
 | Everything else | `""` |
 
-**Critical:** `ATTRIBUTE_VALUE N` = plain number (`"75"`), `ATTRIBUTE_UOM N` = unit (`"W"`). NOT `"75 W"` in value.
+`ATTRIBUTE_VALUE N` = plain number (`"75"`), `ATTRIBUTE_UOM N` = unit (`"W"`). NOT `"75 W"` in value.
 
-Smoke test:
+**Smoke test — Mac/Linux:**
 ```bash
 python3 src/pipeline.py --limit 5
-# Verify: output_demo.csv has 5 rows + header, 252 columns, no None values
 ```
+
+**Smoke test — Windows (cmd):**
+```cmd
+python src\pipeline.py --limit 5
+```
+
+Verify: `output_demo.csv` has 5 rows + header, 252 columns, no `None` values.
 
 ---
 
@@ -258,81 +263,85 @@ python3 src/pipeline.py --limit 5
 
 **You own:** `sample_data/eval_set.csv`, `src/evaluate.py`, `app.py`, `tests/`
 
-### Updated requirement from the video: Dynamic CSV upload ⚠️ CRITICAL
-
-**Evaluators will upload their own CSV. A static demo that only works on your sample data will be penalised.**
-
-`app.py` must have TWO tabs:
-1. **Demo tab** — your pre-loaded `input_slice.csv` with SKU dropdown (existing design)
-2. **Upload tab** — `st.file_uploader` accepting any correctly-shaped 6-column CSV, runs the full pipeline on the uploaded data, shows results, and offers a downloadable 252-column output CSV
+### app.py — TWO TABS REQUIRED ⚠️
 
 ```python
-import streamlit as st
-import pandas as pd
-import io
-
 tab1, tab2 = st.tabs(["Demo", "Upload Your Own CSV"])
 
 with tab1:
-    # Existing SKU dropdown + enrichment display
+    # SKU dropdown + enrichment display (existing design)
 
 with tab2:
     uploaded = st.file_uploader("Upload a 6-column product CSV", type="csv")
     if uploaded:
-        df = pd.read_csv(uploaded)
-        # Validate columns: Mfg_Part_Num, Part_Desc, E1_Brand, Unilog_Brand, DIB_Brand, Part_Manuf
-        # Run pipeline on each row
-        # Show results table
-        # st.download_button to download the 252-column output CSV
+        # Run pipeline, show results, st.download_button for 252-col output CSV
 ```
 
-### File 1: `sample_data/eval_set.csv`
+**Run Streamlit — Mac/Linux:**
+```bash
+streamlit run app.py
+```
 
-Schema: `mfg_part_num,attribute_label,expected_value,expected_uom,notes`
+**Run Streamlit — Windows (cmd):**
+```cmd
+streamlit run app.py
+```
 
-For `565374` and `586875`: read values from the `.txt` source files.
-For 8 other rows: read directly from `Part_Desc` in `input_slice.csv`.
+### eval_set.csv schema
+
+```
+mfg_part_num,attribute_label,expected_value,expected_uom,notes
+565374,Wattage,75,W,from Part_Desc
+565374,Color Temperature,2700,K,from Part_Desc
+565374,Lumens,1100,lm,from 046677589233_philips.txt
+...
+```
 
 Value format: `"75"` not `"75W"`, `"2700"` not `"2700K"`, `"E26"` not `"e26"`.
-Set `expected_value=""` for attributes not found (genuinely BLANK is expected).
 
-### File 2: `src/evaluate.py`
+### Run evaluator
 
-```python
-def load_eval_set(path: str) -> dict: ...
-def run_eval(output_csv: str = "output_demo.csv", eval_csv: str = "sample_data/eval_set.csv") -> None:
-    # Load output CSV, reconstruct attributes from ATTRIBUTE_LABEL N / ATTRIBUTE_VALUE N
-    # Score: correct / unsupported_claim / miss
-    # Print: total, correct, unsupported, misses, accuracy %
-    # Exit 0 always
-
-if __name__ == "__main__":
-    run_eval()
+**Mac/Linux:**
+```bash
+python3 src/evaluate.py
 ```
 
-### File 3: `tests/`
+**Windows (cmd):**
+```cmd
+python src\evaluate.py
+```
 
+### Run property tests
+
+**Mac/Linux:**
+```bash
+pip3 install hypothesis pytest
+python3 -m pytest tests/ -v
+```
+
+**Windows (cmd):**
+```cmd
+pip install hypothesis pytest
+python -m pytest tests\ -v
+```
+
+**CRITICAL:** First line of `tests/test_properties.py` must be:
+```python
+import os; os.environ.pop("XAI_API_KEY", None)  # never call live API in tests
+```
+
+### Create tests directory
+
+**Mac/Linux:**
 ```bash
 mkdir -p tests && touch tests/__init__.py tests/conftest.py
 ```
 
-**CRITICAL in `tests/test_properties.py`:**
-```python
-import os
-os.environ.pop("XAI_API_KEY", None)  # MUST be first line — never call live API in tests
-```
-
-Property tests to implement (see `src/models.py` for reference):
-- `parse_wattage(f"{N}W")` → `f"{N} W"` for N 1–9999
-- `parse_cct(f"{N}k")` → `f"{N*100} K"` for N 20–79
-- `parse_pack_qty(f"{N}pk")` → `str(N)` for N 1–999
-- `enrich(row)` always returns exactly 7 attributes (XAI_API_KEY unset)
-- `build_output_row(row, headers)` → 252 string-valued keys
-- `build_invoice_desc(...)` → ALL CAPS, `len ≤ 40`
-
-Run:
-```bash
-python3 -m pytest tests/ -v
+**Windows (cmd):**
+```cmd
+mkdir tests
+type nul > tests\__init__.py
+type nul > tests\conftest.py
 ```
 
 ---
@@ -353,7 +362,7 @@ python3 -m pytest tests/ -v
 | Day | A | B | C | D |
 |-----|---|---|---|---|
 | 16 Aug (Sat) | ingest + normalize + classify | **DONE** | pipeline structure | eval_set.csv |
-| 17 Aug (Sun) | retrieve (live search) | support bugs | full CSV output | evaluate.py + app.py (upload tab) |
+| 17 Aug (Sun) | retrieve (live search) | support bugs | full CSV output | evaluate.py + app.py upload tab |
 | 18 Aug (Mon) | Done | Done | integration smoke test | property tests |
 | 19 Aug (Tue) | support | support | full pipeline run + numbers | final UI check |
 | 20 Aug | README + Solution Brief Overview |
