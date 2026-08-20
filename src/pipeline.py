@@ -36,7 +36,6 @@ import csv
 import json
 import os
 import sys
-import argparse
 from typing import Optional
 
 from models import CleanRow, Classification, Attribute, EnrichedRow, ATTRIBUTE_LABELS
@@ -139,13 +138,16 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Your actual job: headers + row assembly + CSV writing
 # ---------------------------------------------------------------------------
-HEADERS_PATH = os.path.join("sample_data", "real_output_headers.json")
+HEADERS_PATH = os.path.join(os.path.dirname(__file__), "..", "sample_data", "real_output_headers.json")
 MAX_REF_URLS = 5
 
 
 def load_real_headers() -> list:
     """Load the authoritative 252-column header list, in exact order."""
-    with open(HEADERS_PATH, encoding="utf-8") as f:
+    path = HEADERS_PATH
+    if not os.path.exists(path):
+        path = os.path.join("sample_data", "real_output_headers.json")
+    with open(path, encoding="utf-8") as f:
         headers = json.load(f)
     if not isinstance(headers, list):
         raise ValueError(f"{HEADERS_PATH} must contain a JSON array of column names")

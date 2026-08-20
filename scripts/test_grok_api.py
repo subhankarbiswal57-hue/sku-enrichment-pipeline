@@ -17,13 +17,21 @@ sys.path.insert(0, "src")
 from dotenv import load_dotenv
 load_dotenv(".env")
 
-api_key = os.environ.get("XAI_API_KEY", "")
-if not api_key or api_key == "your_xai_api_key_here":
-    print("ERROR: XAI_API_KEY not set in .env")
+openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
+xai_key = os.environ.get("XAI_API_KEY", "")
+llm_model = os.environ.get("LLM_MODEL", "google/gemma-4-26b-a4b-it:free")
+
+if openrouter_key and openrouter_key != "your_openrouter_api_key_here":
+    print(f"OpenRouter API key loaded: {openrouter_key[:12]}...{openrouter_key[-4:]}")
+    print(f"Model: {llm_model}")
+elif xai_key and xai_key != "your_xai_api_key_here":
+    print(f"xAI API key loaded: {xai_key[:8]}...{xai_key[-4:]}")
+    print("Model: grok-beta")
+else:
+    print("ERROR: Neither OPENROUTER_API_KEY nor XAI_API_KEY set in .env")
     sys.exit(1)
 
-print(f"API key loaded: {api_key[:8]}...{api_key[-4:]}")
-print("Calling Grok API for SKU 565374 (Philips 75W A19 E26 x4)...\n")
+print("Calling LLM API for SKU 565374 (Philips 75W A19 Med 27k 4pk)...\n")
 
 # Stub normalize so enrich.py can import it
 norm = types.ModuleType("normalize")

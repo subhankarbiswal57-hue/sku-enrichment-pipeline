@@ -15,7 +15,7 @@
 | `src/normalize.py` | ✅ Done | A | Deterministic wattage (W), CCT (K), pack qty, base type |
 | `src/classify.py` | ✅ Done | A | Dept>Class>Fine priority taxonomy, returns Classification with found flag |
 | `src/retrieve.py` | ✅ Done | A | Curated manifest cache + live DuckDuckGo fallback + marketplace blocking |
-| `src/pipeline.py` | ⏳ Pending | C | |
+| `src/pipeline.py` | ✅ Done | C | Complete orchestration, wires A & B, outputs exact 252 delivery columns |
 | `src/evaluate.py` | ⏳ Pending | D | |
 | `app.py` | ⏳ Pending | D | **Must have CSV upload tab** |
 | `sample_data/eval_set.csv` | ⏳ Pending | D | |
