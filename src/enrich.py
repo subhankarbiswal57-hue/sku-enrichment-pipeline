@@ -58,9 +58,18 @@ SYSTEM_PROMPT = (
 # Regex patterns for fallback source extraction
 # ---------------------------------------------------------------------------
 
+# Numeric attribute patterns
 LUMENS_RE   = re.compile(r"(\d{3,5})\s*lm", re.IGNORECASE)
 LIFE_RE     = re.compile(r"(\d{3,6})\s*h(?:our|r)?(?:\b|$)", re.IGNORECASE)
 DIMMABLE_RE = re.compile(r"\bdi(?:mm|mming|mmable)\b", re.IGNORECASE)
+
+# Marketing description: paragraph(s) after "Description:" heading
+MARKETING_DESC_RE = re.compile(
+    r"(?:^|\n)(?:Description|Marketing|Overview)[:\s]*\n+(.*?)(?:\n\n|\nSpecification|\nTitle|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+# Item features: bullet-point lines (-, •, *) — require at least 3 chars of content
+ITEM_FEATURE_RE = re.compile(r"^[-•*]\s*(.{3,})$", re.MULTILINE)
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +287,39 @@ def _no_source_attrs() -> list[Attribute]:
 
 
 # ---------------------------------------------------------------------------
+# Extract manufacturer-only fields (marketing description + item features)
+# These fields have ZERO fallback — manufacturer page only, never generated.
+# ---------------------------------------------------------------------------
+
+def _extract_manufacturer_only_fields(
+    source_text: str,
+) -> tuple[str | None, list[str]]:
+    """
+    Returns (marketing_description, item_features_list).
+
+    Both are extracted from the source text as-is — we do NOT generate or
+    rephrase these. If not found, marketing_description=None and
+    item_features=[].
+
+    Per the official rules:
+    - MARKETING_DESCRIPTION must come from the manufacturer's site verbatim.
+    - ITEM_FEATURES must come from the manufacturer's site only.
+    """
+    # Marketing description: paragraph after "Description:" heading
+    marketing_description: str | None = None
+    m = MARKETING_DESC_RE.search(source_text)
+    if m:
+        marketing_description = m.group(1).strip()
+        # Collapse excessive whitespace but preserve paragraphs
+        marketing_description = re.sub(r"\n{3,}", "\n\n", marketing_description)
+
+    # Item features: bullet-point lines
+    item_features = [m.group(1).strip() for m in ITEM_FEATURE_RE.finditer(source_text)]
+
+    return marketing_description, item_features
+
+
+# ---------------------------------------------------------------------------
 # Main entry point: enrich(row) -> EnrichedRow
 # ---------------------------------------------------------------------------
 
@@ -306,9 +348,12 @@ def enrich(row: CleanRow) -> EnrichedRow:
         else:
             source_attrs = _fallback_extract_from_source(source_text, source_url)
         mfr_url = source_url
+        marketing_description, item_features = _extract_manufacturer_only_fields(source_text)
     else:
         source_attrs = _no_source_attrs()  # 3 blank attrs
         mfr_url = None
+        marketing_description = None
+        item_features = []
 
     # Combine: always 7 attrs in fixed order
     all_attrs = part_desc_attrs + source_attrs
@@ -322,6 +367,8 @@ def enrich(row: CleanRow) -> EnrichedRow:
         mfr_url=mfr_url,
         ref_urls=[],
         attributes=all_attrs,
+        marketing_description=marketing_description,
+        item_features=item_features,
     )
 
 

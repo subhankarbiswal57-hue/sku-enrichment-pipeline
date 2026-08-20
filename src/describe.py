@@ -220,15 +220,45 @@ def build_long_desc(enriched: EnrichedRow, manufacturer_name: str | None) -> str
 
 def build_all(enriched: EnrichedRow, manufacturer_name: str | None) -> dict[str, str]:
     """
-    Returns a dict with exactly four keys:
-        INVOICE_DESC, MOBILE_DESC, SHORT_DESC, LONG_DESC1
+    Returns a dict with exactly five keys:
+        INVOICE_DESC, MOBILE_DESC, SHORT_DESC, LONG_DESC1, RETAIL_DESC
     All values are str (never None).
+
+    RETAIL_DESC is a concise retail-facing description — shorter than LONG_DESC1,
+    suitable for a product listing page. Uses key FOUND attributes only.
     """
+    attrs  = enriched.attributes
+    brand  = (manufacturer_name or "").strip() or "Unknown Brand"
+
+    wattage = _found(attrs, "Wattage")
+    cct     = _found(attrs, "Color Temperature")
+    base    = _found(attrs, "Base Type")
+    pack    = _found(attrs, "Pack Quantity")
+    lumens  = _found(attrs, "Lumens")
+    w_uom   = _found_uom(attrs, "Wattage")
+    c_uom   = _found_uom(attrs, "Color Temperature")
+    lm_uom  = _found_uom(attrs, "Lumens")
+
+    # RETAIL_DESC: concise retail format — brand, item type, key specs
+    retail_parts = [f"{brand} LED Bulb"]
+    if wattage:
+        retail_parts.append(_with_uom(wattage, w_uom or "W"))
+    if cct:
+        retail_parts.append(_with_uom(cct, c_uom or "K"))
+    if base:
+        retail_parts.append(f"{base} Base")
+    if lumens:
+        retail_parts.append(_with_uom(lumens, lm_uom or "lm"))
+    if pack:
+        retail_parts.append(f"{pack}-Pack")
+    retail_desc = ", ".join(retail_parts) if len(retail_parts) > 1 else ""
+
     return {
         "INVOICE_DESC": build_invoice_desc(enriched, manufacturer_name),
         "MOBILE_DESC":  build_mobile_desc(enriched, manufacturer_name),
         "SHORT_DESC":   build_short_desc(enriched, manufacturer_name),
         "LONG_DESC1":   build_long_desc(enriched, manufacturer_name),
+        "RETAIL_DESC":  retail_desc,
     }
 
 

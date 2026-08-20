@@ -124,8 +124,8 @@ for mpn, row in rows.items():
     descs = build_all(result, row.manufacturer_name)
     print()
 
-    # Assert: exactly 4 keys, all str
-    expected_keys = {"INVOICE_DESC", "MOBILE_DESC", "SHORT_DESC", "LONG_DESC1"}
+    # Assert: exactly 5 keys, all str
+    expected_keys = {"INVOICE_DESC", "MOBILE_DESC", "SHORT_DESC", "LONG_DESC1", "RETAIL_DESC"}
     if set(descs.keys()) != expected_keys:
         errors.append(f"{mpn}: build_all returned wrong keys: {set(descs.keys())}")
 
@@ -140,6 +140,10 @@ for mpn, row in rows.items():
         errors.append(f"{mpn}: INVOICE_DESC is not ALL CAPS: {inv!r}")
     if len(inv) > 40:
         errors.append(f"{mpn}: INVOICE_DESC exceeds 40 chars ({len(inv)}): {inv!r}")
+
+    # Check new fields on EnrichedRow
+    print(f"\n  marketing_description: {result.marketing_description!r}")
+    print(f"  item_features ({len(result.item_features)}): {result.item_features}")
 
 
 print(f"\n{'='*60}")
